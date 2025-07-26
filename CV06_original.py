@@ -217,39 +217,25 @@ class Rule_CV06(BaseRule):
             return None
 
         consecutive_semicolons = [target_segment]
-        current_search_idx = current_idx + 1
+        i = current_idx + 1
 
-        while current_search_idx < len(segments):
-            current_segment = segments[current_search_idx]
-            if self._is_semicolon_terminator(current_segment):
-                consecutive_semicolons.append(current_segment)
-                current_search_idx += 1
-            elif current_segment.is_type("whitespace"):
-                next_non_whitespace_idx = current_search_idx + 1
-                while (next_non_whitespace_idx < len(segments) and
-                       segments[next_non_whitespace_idx].is_type("whitespace")):
-                    next_non_whitespace_idx += 1
-
-                has_semicolon_after_whitespace = (next_non_whitespace_idx < len(segments) and
-                    self._is_semicolon_terminator(segments[next_non_whitespace_idx]))
-
-                if has_semicolon_after_whitespace:
-                    current_search_idx += 1
-                else:
-                    current_search_idx = len(segments)
-            else:
-                current_search_idx = len(segments)
+        while (i < len(segments) and
+               (self._is_semicolon_terminator(segments[i]) or self._is_safe_to_remove_between_semicolons(segments[i]))):
+            seg = segments[i]
+            if self._is_semicolon_terminator(seg):
+                consecutive_semicolons.append(seg)
+            i += 1
 
         if len(consecutive_semicolons) > 1:
             extra_semicolon_removal_fixes = []
             for extra_semicolon in consecutive_semicolons[1:]:
                 extra_semicolon_removal_fixes.append(LintFix.delete(extra_semicolon))
 
-            for segment_idx in range(current_idx + 1, current_search_idx):
-                if (segment_idx < len(segments) and
-                    segments[segment_idx].is_type("whitespace") and
-                    segments[segment_idx] not in consecutive_semicolons):
-                    extra_semicolon_removal_fixes.append(LintFix.delete(segments[segment_idx]))
+            for j in range(current_idx + 1, i):
+                if (j < len(segments) and
+                    self._is_safe_to_remove_between_semicolons(segments[j]) and
+                    segments[j] not in consecutive_semicolons):
+                    extra_semicolon_removal_fixes.append(LintFix.delete(segments[j]))
 
             return LintResult(
                 anchor=target_segment,
@@ -267,7 +253,10 @@ class Rule_CV06(BaseRule):
         if not info.before_segment:
             return None
 
-        semicolon_placement_fixes = self._create_semicolon_and_delete_whitespace(
+        # If preceding segments are found then delete the old
+        # semi-colon and its preceding whitespace and then insert
+        # the semi-colon in the correct location.
+        fixes = self._create_semicolon_and_delete_whitespace(
             target_segment,
             parent_segment,
             info.anchor_segment,
@@ -278,7 +267,7 @@ class Rule_CV06(BaseRule):
         )
         return LintResult(
             anchor=info.anchor_segment,
-            fixes=semicolon_placement_fixes,
+            fixes=fixes,
         )
 
     def _handle_semicolon_newline(
@@ -287,23 +276,32 @@ class Rule_CV06(BaseRule):
         parent_segment: BaseSegment,
         info: SegmentMoveContext,
     ) -> Optional[LintResult]:
-        adjusted_before_segments, adjusted_anchor = self._handle_preceding_inline_comments(
+        # Adjust before_segment and anchor_segment for preceding inline
+        # comments. Inline comments can contain noqa logic so we need to add the
+        # newline after the inline comment.
+        (before_segment, anchor_segment) = self._handle_preceding_inline_comments(
             info.before_segment, info.anchor_segment
         )
 
-        if (len(adjusted_before_segments) == 1) and all(
-            s.is_type("newline") for s in adjusted_before_segments
+        if (len(before_segment) == 1) and all(
+            s.is_type("newline") for s in before_segment
         ):
             return None
 
-        anchor_after_trailing_comments = self._handle_trailing_inline_comments(
-            parent_segment, adjusted_anchor
+        # If preceding segment is not a single newline then delete the old
+        # semi-colon/preceding whitespace and then insert the
+        # semi-colon in the correct location.
+
+        # This handles an edge case in which an inline comment comes after
+        # the semi-colon.
+        anchor_segment = self._handle_trailing_inline_comments(
+            parent_segment, anchor_segment
         )
-        semicolon_placement_fixes = []
-        if anchor_after_trailing_comments is target_segment:
-            semicolon_placement_fixes.append(
+        fixes = []
+        if anchor_segment is target_segment:
+            fixes.append(
                 LintFix.replace(
-                    anchor_after_trailing_comments,
+                    anchor_segment,
                     [
                         NewlineSegment(),
                         SymbolSegment(raw=";", type="statement_terminator"),
@@ -311,11 +309,11 @@ class Rule_CV06(BaseRule):
                 )
             )
         else:
-            semicolon_placement_fixes.extend(
+            fixes.extend(
                 self._create_semicolon_and_delete_whitespace(
                     target_segment,
                     parent_segment,
-                    anchor_after_trailing_comments,
+                    anchor_segment,
                     info.whitespace_deletions,
                     [
                         NewlineSegment(),
@@ -324,8 +322,8 @@ class Rule_CV06(BaseRule):
                 )
             )
         return LintResult(
-            anchor=anchor_after_trailing_comments,
-            fixes=semicolon_placement_fixes,
+            anchor=anchor_segment,
+            fixes=fixes,
         )
 
     def _create_semicolon_and_delete_whitespace(
@@ -363,32 +361,35 @@ class Rule_CV06(BaseRule):
     def _ensure_final_semicolon(
         self, parent_segment: BaseSegment
     ) -> Optional[LintResult]:
-        last_code_segment = next((seg for seg in reversed(parent_segment.segments) if seg.is_code), None)
-        if last_code_segment is None:
-            return None
-
-        final_semicolon_exists = any(seg.is_type("statement_terminator") for seg in reversed(parent_segment.segments))
-        statement_is_single_line = self._is_one_line_statement(parent_segment, last_code_segment)
-
-        non_meta_segments_before_code = []
+        # Iterate backwards over complete stack to find
+        # if the final semi-colon is already present.
         anchor_segment = parent_segment.segments[-1]
         trigger_segment = parent_segment.segments[-1]
-
-        for segment in reversed(parent_segment.segments):
+        semi_colon_exist_flag = False
+        is_one_line = False
+        before_segment = []
+        for segment in parent_segment.segments[::-1]:
             anchor_segment = segment
-            if segment.is_code:
+            if segment.is_type("statement_terminator"):
+                semi_colon_exist_flag = True
+            elif segment.is_code:
+                is_one_line = self._is_one_line_statement(parent_segment, segment)
                 break
             elif not segment.is_meta:
-                non_meta_segments_before_code.append(segment)
+                before_segment.append(segment)
             trigger_segment = segment
-
+        else:
+            return None  # File does not contain any statements
         self.logger.debug("Trigger on: %s", trigger_segment)
         self.logger.debug("Anchoring on: %s", anchor_segment)
 
-        should_use_newline_before_semicolon = self.multiline_newline if not statement_is_single_line else False
+        semicolon_newline = self.multiline_newline if not is_one_line else False
 
-        if not final_semicolon_exists:
-            if not should_use_newline_before_semicolon:
+        if not semi_colon_exist_flag:
+            # Create the final semi-colon if it does not yet exist.
+
+            # Semi-colon on same line.
+            if not semicolon_newline:
                 fixes = [
                     LintFix.create_after(
                         self._choose_anchor_segment(
@@ -402,17 +403,23 @@ class Rule_CV06(BaseRule):
                         ],
                     )
                 ]
+            # Semi-colon on new line.
             else:
-                adjusted_segments, adjusted_anchor = self._handle_preceding_inline_comments(
-                    non_meta_segments_before_code, anchor_segment
+                # Adjust before_segment and anchor_segment for inline
+                # comments.
+                (
+                    before_segment,
+                    anchor_segment,
+                ) = self._handle_preceding_inline_comments(
+                    before_segment, anchor_segment
                 )
-                self.logger.debug("Revised anchor on: %s", adjusted_anchor)
+                self.logger.debug("Revised anchor on: %s", anchor_segment)
                 fixes = [
                     LintFix.create_after(
                         self._choose_anchor_segment(
                             parent_segment,
                             "create_after",
-                            adjusted_anchor,
+                            anchor_segment,
                             filter_meta=True,
                         ),
                         [
@@ -432,17 +439,19 @@ class Rule_CV06(BaseRule):
     ) -> Optional[LintResult]:
         """Handle a statement that is completely missing a semicolon."""
 
-        last_non_meta_segment = next((seg for seg in reversed(statement_segment.segments) if not seg.is_meta), None)
+        last_segment = None
+        for seg in reversed(statement_segment.segments):
+            if not seg.is_meta:
+                last_segment = seg
+                break
 
-        if not last_non_meta_segment:
+        if not last_segment:
             return None
 
-        statement_is_single_line = self._is_one_line_statement(parent_segment, statement_segment)
-        should_use_newline_before_semicolon = self.multiline_newline if not statement_is_single_line else False
+        is_one_line = self._is_one_line_statement(parent_segment, statement_segment)
+        semicolon_newline = self.multiline_newline if not is_one_line else False
 
-        anchor_after_inline_comments = self._handle_trailing_inline_comments(parent_segment, last_non_meta_segment)
-
-        if should_use_newline_before_semicolon:
+        if semicolon_newline:
             segments_to_add = [
                 NewlineSegment(),
                 SymbolSegment(raw=";", type="statement_terminator"),
@@ -452,16 +461,16 @@ class Rule_CV06(BaseRule):
                 SymbolSegment(raw=";", type="statement_terminator"),
             ]
 
-        final_anchor_segment = self._choose_anchor_segment(
-            parent_segment, "create_after", anchor_after_inline_comments, filter_meta=True
+        anchor_segment = self._choose_anchor_segment(
+            parent_segment, "create_after", last_segment, filter_meta=True
         )
 
         missing_semicolon_fixes = [
-            LintFix.create_after(final_anchor_segment, segments_to_add)
+            LintFix.create_after(anchor_segment, segments_to_add)
         ]
 
         return LintResult(
-            anchor=last_non_meta_segment,
+            anchor=last_segment,
             fixes=missing_semicolon_fixes,
         )
 
@@ -503,11 +512,9 @@ class Rule_CV06(BaseRule):
             if res:
                 results.append(res)
 
-        if self.require_final_semicolon:
-            # When require_final_semicolon is True, ALL statements need semicolons
-            for statement in statements_needing_semicolons:
-                res = self._handle_missing_semicolon(statement, context.segment)
-                if res:
-                    results.append(res)
+        for statement in statements_needing_semicolons:
+            res = self._handle_missing_semicolon(statement, context.segment)
+            if res:
+                results.append(res)
 
         return results

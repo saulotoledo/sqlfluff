@@ -232,7 +232,7 @@ class Rule_CV06(BaseRule):
 
                 has_semicolon_after_whitespace = (next_non_whitespace_idx < len(segments) and
                     self._is_semicolon_terminator(segments[next_non_whitespace_idx]))
-
+                
                 if has_semicolon_after_whitespace:
                     current_search_idx += 1
                 else:
@@ -369,11 +369,11 @@ class Rule_CV06(BaseRule):
 
         final_semicolon_exists = any(seg.is_type("statement_terminator") for seg in reversed(parent_segment.segments))
         statement_is_single_line = self._is_one_line_statement(parent_segment, last_code_segment)
-
+        
         non_meta_segments_before_code = []
         anchor_segment = parent_segment.segments[-1]
         trigger_segment = parent_segment.segments[-1]
-
+        
         for segment in reversed(parent_segment.segments):
             anchor_segment = segment
             if segment.is_code:
@@ -504,10 +504,14 @@ class Rule_CV06(BaseRule):
                 results.append(res)
 
         if self.require_final_semicolon:
-            # When require_final_semicolon is True, ALL statements need semicolons
+            last_statement = None
+            reversed_segments = reversed(context.segment.segments)
+            last_statement = next((seg for seg in reversed_segments if seg.is_type("statement")), None)
+
             for statement in statements_needing_semicolons:
-                res = self._handle_missing_semicolon(statement, context.segment)
-                if res:
-                    results.append(res)
+                if statement != last_statement:
+                    res = self._handle_missing_semicolon(statement, context.segment)
+                    if res:
+                        results.append(res)
 
         return results
