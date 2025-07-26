@@ -440,25 +440,33 @@ class Rule_CV06(BaseRule):
         statement_is_single_line = self._is_one_line_statement(parent_segment, statement_segment)
         should_use_newline_before_semicolon = self.multiline_newline if not statement_is_single_line else False
 
-        anchor_after_inline_comments = self._handle_trailing_inline_comments(parent_segment, last_non_meta_segment)
-
         if should_use_newline_before_semicolon:
-            segments_to_add = [
+            anchor_after_trailing_inline_comments = self._handle_trailing_inline_comments(parent_segment, last_non_meta_segment)
+
+            newline_semicolon_segments = [
                 NewlineSegment(),
                 SymbolSegment(raw=";", type="statement_terminator"),
             ]
+
+            final_anchor_for_multiline_semicolon = self._choose_anchor_segment(
+                parent_segment, "create_after", anchor_after_trailing_inline_comments, filter_meta=True
+            )
+
+            missing_semicolon_fixes = [
+                LintFix.create_after(final_anchor_for_multiline_semicolon, newline_semicolon_segments)
+            ]
         else:
-            segments_to_add = [
+            inline_semicolon_segments = [
                 SymbolSegment(raw=";", type="statement_terminator"),
             ]
 
-        final_anchor_segment = self._choose_anchor_segment(
-            parent_segment, "create_after", anchor_after_inline_comments, filter_meta=True
-        )
+            final_anchor_for_inline_semicolon = self._choose_anchor_segment(
+                parent_segment, "create_after", last_non_meta_segment, filter_meta=True
+            )
 
-        missing_semicolon_fixes = [
-            LintFix.create_after(final_anchor_segment, segments_to_add)
-        ]
+            missing_semicolon_fixes = [
+                LintFix.create_after(final_anchor_for_inline_semicolon, inline_semicolon_segments)
+            ]
 
         return LintResult(
             anchor=last_non_meta_segment,
@@ -492,19 +500,11 @@ class Rule_CV06(BaseRule):
 
                 if statements_needing_semicolons:
                     statements_needing_semicolons.pop()
-            # Otherwise handle the end of the file separately.
-            elif (
-                self.require_final_semicolon
-                and idx == len(context.segment.segments) - 1
-            ):
-                self.logger.debug("Handling final segment: %s", seg)
-                res = self._ensure_final_semicolon(context.segment)
 
             if res:
                 results.append(res)
 
         if self.require_final_semicolon:
-            # When require_final_semicolon is True, ALL statements need semicolons
             for statement in statements_needing_semicolons:
                 res = self._handle_missing_semicolon(statement, context.segment)
                 if res:
