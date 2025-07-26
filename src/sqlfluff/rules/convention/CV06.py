@@ -176,6 +176,14 @@ class Rule_CV06(BaseRule):
     def _handle_semicolon(
         self, target_segment: RawSegment, parent_segment: BaseSegment
     ) -> Optional[LintResult]:
+        # Only handle actual semicolons, ignore other terminators like Oracle's /
+        if target_segment.raw != ";":
+            return None
+
+        repeated_semicolon_result = self._handle_repeated_semicolons(target_segment, parent_segment)
+        if repeated_semicolon_result:
+            return repeated_semicolon_result
+
         info = self._get_segment_move_context(target_segment, parent_segment)
         semicolon_newline = self.multiline_newline if not info.is_one_line else False
         self.logger.debug("Semicolon Newline: %s", semicolon_newline)
@@ -188,6 +196,53 @@ class Rule_CV06(BaseRule):
         # Semi-colon on new line.
         else:
             return self._handle_semicolon_newline(target_segment, parent_segment, info)
+
+    def _is_semicolon_terminator(self, segment: BaseSegment) -> bool:
+        """Check if segment is a semicolon terminator."""
+        return segment.is_type("statement_terminator") and segment.raw == ";"
+
+    def _is_safe_to_remove_between_semicolons(self, segment: BaseSegment) -> bool:
+        """Check if segment is safe to remove when cleaning up between consecutive semicolons."""
+        return segment.is_type("whitespace") or segment.is_type("newline")
+
+    def _handle_repeated_semicolons(
+        self, target_segment: RawSegment, parent_segment: BaseSegment
+    ) -> Optional[LintResult]:
+        """Handle multiple consecutive semicolons by replacing with single semicolon."""
+        # Find the position of the current semicolon in the parent's segments
+        segments = parent_segment.segments
+        try:
+            current_idx = segments.index(target_segment)
+        except ValueError:
+            return None
+
+        consecutive_semicolons = [target_segment]
+        i = current_idx + 1
+
+        while (i < len(segments) and
+               (self._is_semicolon_terminator(segments[i]) or self._is_safe_to_remove_between_semicolons(segments[i]))):
+            seg = segments[i]
+            if self._is_semicolon_terminator(seg):
+                consecutive_semicolons.append(seg)
+            i += 1
+
+        if len(consecutive_semicolons) > 1:
+            extra_semicolon_removal_fixes = []
+            for extra_semicolon in consecutive_semicolons[1:]:
+                extra_semicolon_removal_fixes.append(LintFix.delete(extra_semicolon))
+
+            for j in range(current_idx + 1, i):
+                if (j < len(segments) and
+                    self._is_safe_to_remove_between_semicolons(segments[j]) and
+                    segments[j] not in consecutive_semicolons):
+                    extra_semicolon_removal_fixes.append(LintFix.delete(segments[j]))
+
+            return LintResult(
+                anchor=target_segment,
+                fixes=extra_semicolon_removal_fixes,
+            )
+
+        return None
 
     def _handle_semicolon_same_line(
         self,
@@ -379,6 +434,46 @@ class Rule_CV06(BaseRule):
             )
         return None
 
+    def _handle_missing_semicolon(
+        self, statement_segment: BaseSegment, parent_segment: BaseSegment
+    ) -> Optional[LintResult]:
+        """Handle a statement that is completely missing a semicolon."""
+
+        last_segment = None
+        for seg in reversed(statement_segment.segments):
+            if not seg.is_meta:
+                last_segment = seg
+                break
+
+        if not last_segment:
+            return None
+
+        is_one_line = self._is_one_line_statement(parent_segment, statement_segment)
+        semicolon_newline = self.multiline_newline if not is_one_line else False
+
+        if semicolon_newline:
+            segments_to_add = [
+                NewlineSegment(),
+                SymbolSegment(raw=";", type="statement_terminator"),
+            ]
+        else:
+            segments_to_add = [
+                SymbolSegment(raw=";", type="statement_terminator"),
+            ]
+
+        anchor_segment = self._choose_anchor_segment(
+            parent_segment, "create_after", last_segment, filter_meta=True
+        )
+
+        missing_semicolon_fixes = [
+            LintFix.create_after(anchor_segment, segments_to_add)
+        ]
+
+        return LintResult(
+            anchor=last_segment,
+            fixes=missing_semicolon_fixes,
+        )
+
     def _eval(self, context: RuleContext) -> list[LintResult]:
         """Statements must end with a semi-colon."""
         # Config type hints
@@ -388,14 +483,24 @@ class Rule_CV06(BaseRule):
         # We should only be dealing with a root segment
         assert context.segment.is_type("file")
         results = []
+
+        statements_needing_semicolons = []
+
         for idx, seg in enumerate(context.segment.segments):
             res = None
+
+            if seg.is_type("statement"):
+                statements_needing_semicolons.append(seg)
+
             # First we can simply handle the case of existing semi-colon alignment.
             if seg.is_type("statement_terminator"):
                 # If it's a terminator then we know it's a raw.
                 seg = cast(RawSegment, seg)
                 self.logger.debug("Handling semi-colon: %s", seg)
                 res = self._handle_semicolon(seg, context.segment)
+
+                if statements_needing_semicolons:
+                    statements_needing_semicolons.pop()
             # Otherwise handle the end of the file separately.
             elif (
                 self.require_final_semicolon
@@ -403,6 +508,12 @@ class Rule_CV06(BaseRule):
             ):
                 self.logger.debug("Handling final segment: %s", seg)
                 res = self._ensure_final_semicolon(context.segment)
+
+            if res:
+                results.append(res)
+
+        for statement in statements_needing_semicolons:
+            res = self._handle_missing_semicolon(statement, context.segment)
             if res:
                 results.append(res)
 

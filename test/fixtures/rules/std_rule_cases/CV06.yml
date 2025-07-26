@@ -47,6 +47,40 @@ test_fail_no_semi_colon_custom_require:
       convention.terminator:
         require_final_semicolon: true
 
+test_fail_multiple_semi_colons_same_statement:
+  fail_str: |
+    SELECT a FROM foo;;;
+    SELECT a
+    FROM bar;;
+  fix_str: |
+    SELECT a FROM foo;
+    SELECT a
+    FROM bar;
+  configs:
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_no_semi_colon_in_random_multi_line:
+  fail_str: |
+    SELECT a FROM foo
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar
+    SELECT bar
+    FROM foo;
+  fix_str: |
+    SELECT a FROM foo;
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar;
+    SELECT bar
+    FROM foo;
+  configs:
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
 test_fail_no_semi_colon_custom_require_oneline:
   fail_str: |
     SELECT a FROM foo
