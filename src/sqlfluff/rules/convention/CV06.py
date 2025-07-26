@@ -451,6 +451,10 @@ class Rule_CV06(BaseRule):
         is_one_line = self._is_one_line_statement(parent_segment, statement_segment)
         semicolon_newline = self.multiline_newline if not is_one_line else False
 
+        # Handle trailing inline comments - the semicolon should be added after any
+        # inline comment that's on the same line as the last code segment
+        anchor_segment = self._handle_trailing_inline_comments(parent_segment, last_segment)
+
         if semicolon_newline:
             segments_to_add = [
                 NewlineSegment(),
@@ -462,7 +466,7 @@ class Rule_CV06(BaseRule):
             ]
 
         anchor_segment = self._choose_anchor_segment(
-            parent_segment, "create_after", last_segment, filter_meta=True
+            parent_segment, "create_after", anchor_segment, filter_meta=True
         )
 
         missing_semicolon_fixes = [
@@ -512,9 +516,15 @@ class Rule_CV06(BaseRule):
             if res:
                 results.append(res)
 
-        for statement in statements_needing_semicolons:
-            res = self._handle_missing_semicolon(statement, context.segment)
-            if res:
-                results.append(res)
+        if self.require_final_semicolon:
+            last_statement = None
+            reversed_segments = reversed(context.segment.segments)
+            last_statement = next((seg for seg in reversed_segments if seg.is_type("statement")), None)
+
+            for statement in statements_needing_semicolons:
+                if statement != last_statement:
+                    res = self._handle_missing_semicolon(statement, context.segment)
+                    if res:
+                        results.append(res)
 
         return results
