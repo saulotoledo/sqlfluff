@@ -1918,20 +1918,64 @@ class ExecuteImmediateSegment(BaseSegment):
     match_grammar = Sequence(
         "EXECUTE",
         "IMMEDIATE",
+        Indent,
         Ref("ExpressionSegment"),
-        Sequence(
-            "INTO",
-            Delimited(
-                Ref("ColumnReferenceSegment"),
-                Ref("SingleIdentifierGrammar"),
+        OneOf(
+            Sequence(
+                "INTO",
+                Delimited(
+                    Ref("ColumnReferenceSegment"),
+                    Ref("SingleIdentifierGrammar"),
+                    Ref("SqlplusVariableGrammar"),
+                ),
+            ),
+            Sequence(
+                "BULK",
+                "COLLECT",
+                "INTO",
+                Delimited(
+                    Ref("ColumnReferenceSegment"),
+                    Ref("SingleIdentifierGrammar"),
+                    Ref("SqlplusVariableGrammar"),
+                ),
             ),
             optional=True,
         ),
         Sequence(
             "USING",
-            Delimited(Ref("ExpressionSegment")),
+            Delimited(
+                Ref("ExpressionSegment"),
+                Sequence(
+                    OneOf("IN", "OUT", Sequence("IN", "OUT")),
+                    Ref("ExpressionSegment"),
+                ),
+            ),
             optional=True,
         ),
+        OneOf(
+            Sequence(
+                "RETURNING",
+                "INTO",
+                Delimited(
+                    Ref("ColumnReferenceSegment"),
+                    Ref("SingleIdentifierGrammar"),
+                    Ref("SqlplusVariableGrammar"),
+                ),
+            ),
+            Sequence(
+                "RETURNING",
+                "BULK",
+                "COLLECT",
+                "INTO",
+                Delimited(
+                    Ref("ColumnReferenceSegment"),
+                    Ref("SingleIdentifierGrammar"),
+                    Ref("SqlplusVariableGrammar"),
+                ),
+            ),
+            optional=True,
+        ),
+        Dedent,
     )
 
 

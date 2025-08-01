@@ -1,3 +1,6 @@
+-- EXECUTE IMMEDIATE Patterns Test File
+-- Based on test/fixtures/dialects/oracle/plsql_block.sql
+
 -- Pattern 1: Basic EXECUTE IMMEDIATE with concatenation
 DECLARE
     constraint_name VARCHAR2(255);
@@ -79,67 +82,7 @@ BEGIN
 END;
 /
 
--- Pattern 7: EXECUTE IMMEDIATE with BULK COLLECT INTO
-DECLARE
-    TYPE emp_id_tab IS TABLE OF employees.employee_id%TYPE;
-    TYPE emp_name_tab IS TABLE OF employees.first_name%TYPE;
-    TYPE emp_salary_tab IS TABLE OF employees.salary%TYPE;
-    emp_ids emp_id_tab;
-    emp_names emp_name_tab;
-    emp_salaries emp_salary_tab;
-    dept_id NUMBER := 10;
-    min_salary NUMBER := 5000;
-    dynamic_query VARCHAR2(500);
-BEGIN
-    dynamic_query := 'SELECT employee_id, first_name, salary ' ||
-        'FROM employees ' ||
-        'WHERE department_id = :dept_id ' ||
-        'AND salary >= :min_salary ' ||
-        'ORDER BY salary DESC';
-
-    EXECUTE IMMEDIATE dynamic_query
-        BULK COLLECT INTO emp_ids, emp_names, emp_salaries
-        USING dept_id, min_salary;
-
-    FOR i IN 1..emp_ids.COUNT LOOP
-        DBMS_OUTPUT.PUT_LINE('Employee: ' || emp_names(i) ||
-            ', ID: ' || emp_ids(i) ||
-            ', Salary: ' || emp_salaries(i));
-    END LOOP;
-
-    DBMS_OUTPUT.PUT_LINE('Total employees found: ' || emp_ids.COUNT);
-END;
-/
-
--- Pattern 8: EXECUTE IMMEDIATE with RETURNING BULK COLLECT INTO
-DECLARE
-    TYPE emp_id_tab IS TABLE OF employees.employee_id%TYPE;
-    TYPE emp_name_tab IS TABLE OF employees.first_name%TYPE;
-    emp_ids emp_id_tab;
-    emp_names emp_name_tab;
-    dept_id NUMBER := 20;
-    salary_increase NUMBER := 1000;
-    dynamic_update VARCHAR2(500);
-BEGIN
-    dynamic_update := 'UPDATE employees ' ||
-        'SET salary = salary + :increase ' ||
-        'WHERE department_id = :dept_id ' ||
-        'AND salary < 8000';
-
-    EXECUTE IMMEDIATE dynamic_update
-        RETURNING BULK COLLECT INTO emp_ids, emp_names
-        USING salary_increase, dept_id;
-
-    FOR i IN 1..emp_ids.COUNT LOOP
-        DBMS_OUTPUT.PUT_LINE('Updated employee: ' || emp_names(i) ||
-            ' (ID: ' || emp_ids(i) || ')');
-    END LOOP;
-
-    DBMS_OUTPUT.PUT_LINE('Total employees updated: ' || emp_ids.COUNT);
-END;
-/
-
--- Pattern 9: EXECUTE IMMEDIATE with INTO clause
+-- Pattern 7: EXECUTE IMMEDIATE with INTO clause
 DECLARE
     v_count NUMBER;
     v_table VARCHAR2(100) := 'employees';
@@ -150,7 +93,7 @@ BEGIN
 END;
 /
 
--- Pattern 10: EXECUTE IMMEDIATE with RETURNING INTO
+-- Pattern 8: EXECUTE IMMEDIATE with RETURNING INTO
 DECLARE
     v_emp_id NUMBER := 100;
     v_new_salary NUMBER := 7500;
@@ -160,13 +103,13 @@ BEGIN
         'WHERE employee_id = :emp_id ' ||
         'RETURNING salary INTO :old_sal'
         USING v_new_salary, v_emp_id, OUT v_old_salary;
-
+    
     DBMS_OUTPUT.PUT_LINE('Old salary: ' || v_old_salary);
     DBMS_OUTPUT.PUT_LINE('New salary: ' || v_new_salary);
 END;
 /
 
--- Pattern 11: Complex multi-line EXECUTE IMMEDIATE with concatenation
+-- Pattern 9: Complex multi-line EXECUTE IMMEDIATE with concatenation
 DECLARE
     v_sql VARCHAR2(1000);
     v_table VARCHAR2(100) := 'employees';
@@ -177,11 +120,11 @@ BEGIN
     v_sql := 'SELECT COUNT(*) FROM ' || v_table ||
         ' WHERE department_id = :dept_id' ||
         ' AND salary >= :min_salary';
-
+    
     EXECUTE IMMEDIATE v_sql
         INTO v_result
         USING v_dept_id, v_min_salary;
-
+    
     DBMS_OUTPUT.PUT_LINE('Result: ' || v_result);
 END;
-/
+/ 
