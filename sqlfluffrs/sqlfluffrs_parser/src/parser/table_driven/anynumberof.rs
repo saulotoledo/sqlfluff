@@ -369,6 +369,14 @@ impl Parser<'_> {
             return Ok(stack.transition_to_combining(frame, None));
         }
 
+        // Save matched_idx before gap consumption so early-return paths (max_times /
+        // max_times_per_element) produce a boundary that stops at the last code token,
+        // not at the whitespace that precedes the rejected element.
+        // Python parity: when AnyNumberOf/AnySetOf returns early due to limits, the
+        // returned match slice stops at the last matched code position, never at the
+        // following whitespace gap.
+        let old_matched_idx = *ctx.matched_idx;
+
         // We no longer "collect tokens", it's all lazy evaluation now.
         if allow_gaps && *ctx.matched_idx < *ctx.working_idx {
             *ctx.matched_idx = *ctx.working_idx;
@@ -378,8 +386,7 @@ impl Parser<'_> {
         if let Some(max) = max_times {
             if *ctx.count >= max {
                 vdebug!("AnyNumberOf[table]: Reached max_times={}", max);
-                let matched_idx = *ctx.matched_idx;
-                return Ok(stack.transition_to_combining(frame, Some(matched_idx)));
+                return Ok(stack.transition_to_combining(frame, Some(old_matched_idx)));
             }
         }
 
@@ -394,8 +401,10 @@ impl Parser<'_> {
                     element_key,
                     max_per
                 );
-                let matched_idx = *ctx.matched_idx;
-                return Ok(stack.transition_to_combining(frame, Some(matched_idx)));
+                // Python parity: return the accumulated match so far, without the
+                // rejected element. Use old_matched_idx so the segment boundary does
+                // not absorb the trailing whitespace gap.
+                return Ok(stack.transition_to_combining(frame, Some(old_matched_idx)));
             }
         }
 
@@ -531,7 +540,13 @@ impl Parser<'_> {
             if matched.is_empty() {
                 return Ok(stack.complete_frame_empty(&frame));
             } else {
-                (matched.clone(), *matched_idx)
+                // Python parity: use the end_pos set by transition_to_combining
+                // when available, since early-return paths (max_times /
+                // max_times_per_element) set it to the boundary *before*
+                // gap consumption. Fall back to ctx.matched_idx for the
+                // normal exhaustion path where they are identical.
+                let pos = frame.end_pos.unwrap_or(*matched_idx);
+                (matched.clone(), pos)
             }
         };
 
