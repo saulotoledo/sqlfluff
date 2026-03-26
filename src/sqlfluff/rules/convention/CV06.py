@@ -335,6 +335,100 @@ class Rule_CV06(BaseRule):
         fixes.extend(LintFix.delete(d) for d in whitespace_deletions)
         return fixes
 
+    @staticmethod
+    def _statement_has_semicolon(
+        statement: BaseSegment, container: BaseSegment
+    ) -> bool:
+        """Return True if the statement ends with ';' or is directly followed by ';'."""
+        # Check if the statement itself ends with a semicolon (e.g. nested block)
+        if statement.raw_segments and statement.raw_segments[-1].raw == ";":
+            return True
+        # Check if the next non-meta, non-whitespace, non-newline, non-comment sibling
+        # is a ';' statement_terminator.
+        found = False
+        for seg in container.segments:
+            if seg is statement:
+                found = True
+                continue
+            if found:
+                if seg.is_meta:
+                    continue
+                if seg.is_type("statement_terminator"):
+                    return seg.raw == ";"
+                # Any other code segment means no terminator was found
+                # (whitespace/newlines don't count as code)
+                if seg.is_code:
+                    return False
+                # newlines / whitespace / comments: keep looking
+        return False
+
+    def _build_missing_semicolon_result(
+        self,
+        statement: BaseSegment,
+        container: BaseSegment,
+        parent_segment: BaseSegment,
+    ) -> Optional[LintResult]:
+        """Build a LintResult for a statement that is missing a trailing semicolon."""
+        # Walk backwards from the end of the statement to find the anchor.
+        anchor_segment = statement.raw_segments[-1] if statement.raw_segments else None
+        if anchor_segment is None:  # pragma: no cover
+            return None
+
+        trigger_segment = anchor_segment
+        is_one_line = self._is_one_line_statement(parent_segment, statement)
+        semicolon_newline = self.multiline_newline if not is_one_line else False
+
+        # Collect non-code, non-meta trailing segments of the statement for
+        # inline-comment handling.
+        before_segment: list[BaseSegment] = []
+        for seg in reversed(statement.raw_segments):
+            if seg.is_code:
+                anchor_segment = seg
+                break
+            elif not seg.is_meta:
+                before_segment.append(seg)
+
+        self.logger.debug("Missing semicolon trigger on: %s", trigger_segment)
+        self.logger.debug("Missing semicolon anchor on: %s", anchor_segment)
+
+        if not semicolon_newline:
+            fixes = [
+                LintFix.create_after(
+                    self._choose_anchor_segment(
+                        parent_segment,
+                        "create_after",
+                        anchor_segment,
+                        filter_meta=True,
+                    ),
+                    [
+                        SymbolSegment(raw=";", type="statement_terminator"),
+                    ],
+                )
+            ]
+        else:
+            before_segment, anchor_segment = self._handle_preceding_inline_comments(
+                before_segment, anchor_segment
+            )
+            self.logger.debug("Revised missing semicolon anchor on: %s", anchor_segment)
+            fixes = [
+                LintFix.create_after(
+                    self._choose_anchor_segment(
+                        parent_segment,
+                        "create_after",
+                        anchor_segment,
+                        filter_meta=True,
+                    ),
+                    [
+                        NewlineSegment(),
+                        SymbolSegment(raw=";", type="statement_terminator"),
+                    ],
+                )
+            ]
+        return LintResult(
+            anchor=trigger_segment,
+            fixes=fixes,
+        )
+
     def _ensure_final_semicolon(
         self, parent_segment: BaseSegment
     ) -> Optional[LintResult]:
@@ -464,6 +558,15 @@ class Rule_CV06(BaseRule):
             )
         return None  # pragma: no cover
 
+    def _get_non_final_batches(self, file_segment: BaseSegment) -> list[BaseSegment]:
+        """Return all batch segments in the file that are NOT the last batch."""
+        batches = [s for s in file_segment.segments if s.is_type("batch")]
+        # A batch is "non-final" if a subsequent batch exists in the file
+        # (i.e. there is more SQL after it that needs a separator).
+        if len(batches) <= 1:
+            return []
+        return batches[:-1]
+
     def _eval(self, context: RuleContext) -> list[LintResult]:
         """Statements must end with a semi-colon."""
         # Config type hints
@@ -474,19 +577,29 @@ class Rule_CV06(BaseRule):
         assert context.segment.is_type("file")
         results = []
 
-        # Process file segments and any batch segments (for T-SQL)
+        # Process file segments and any batch segments (for T-SQL / Oracle)
         # Collect all containers that should be processed
         containers_to_process = []
 
         # Always process the file level
         containers_to_process.append(context.segment)
 
-        # Also process any batch segments (T-SQL specific)
+        # Also process any batch segments (T-SQL / Oracle specific)
         for seg in context.segment.segments:
             if seg.is_type("batch"):
                 containers_to_process.append(seg)
 
+        # Identify non-final batches: the last statement in these must always
+        # have a ';' terminator because more SQL follows in the file.
+        non_final_batches = set(self._get_non_final_batches(context.segment))
+
         for container in containers_to_process:
+            # Collect statement segments in this container so we can detect
+            # intermediate ones that are missing a semicolon terminator.
+            statements_in_container = [
+                s for s in container.segments if s.is_type("statement")
+            ]
+
             for idx, seg in enumerate(container.segments):
                 res = None
                 # First we can simply handle the case of existing semi-colon alignment.
@@ -497,6 +610,32 @@ class Rule_CV06(BaseRule):
 
                     if self._is_segment_semicolon(seg):
                         res = self._handle_semicolon(seg, container)
+
+                elif seg.is_type("statement"):
+                    # Check whether this statement is missing a semicolon.
+                    # Two cases require a ';':
+                    # 1. Intermediate statements (not the last in their container)
+                    # 2. The last statement of a non-final batch (more SQL follows)
+                    is_last_in_container = (
+                        not statements_in_container
+                        or seg is statements_in_container[-1]
+                    )
+                    is_last_of_non_final_batch = (
+                        is_last_in_container and container in non_final_batches
+                    )
+                    if not is_last_in_container or is_last_of_non_final_batch:
+                        # This statement must have a ';' — either because more
+                        # statements follow in this container, or because another
+                        # batch follows in the file.
+                        if self.require_final_semicolon and not self._statement_has_semicolon(seg, container):
+                            self.logger.debug(
+                                "Handling statement missing semicolon: %s",
+                                seg,
+                            )
+                            res = self._build_missing_semicolon_result(
+                                seg, container, context.segment
+                            )
+
                 # Otherwise handle the end of the container separately.
                 # Only check for final semicolon at the file level, not batch level
                 elif (

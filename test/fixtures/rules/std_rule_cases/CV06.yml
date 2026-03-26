@@ -751,3 +751,189 @@ test_fail_bigquery_procedure_missing_semicolon:
     rules:
       convention.terminator:
         require_final_semicolon: true
+
+# Oracle multi-statement missing semicolon detection
+test_fail_oracle_middle_statement_missing_semicolon:
+  fail_str: |
+    DELETE FROM foo
+    WHERE id = 1
+    DELETE FROM bar
+    WHERE id = 2
+  fix_str: |
+    DELETE FROM foo
+    WHERE id = 1;
+    DELETE FROM bar
+    WHERE id = 2;
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_oracle_existing_semicolon_not_on_newline_when_multiline_newline_required:
+  fail_str: |
+    DELETE FROM foo
+    WHERE id = 1  ;
+    DELETE FROM bar
+    WHERE id = 2 -- no semicolon required here
+    DELETE FROM baz
+    WHERE id = 3
+    ;
+  fix_str: |
+    DELETE FROM foo
+    WHERE id = 1
+    ;
+    DELETE FROM bar
+    WHERE id = 2 -- no semicolon required here
+    DELETE FROM baz
+    WHERE id = 3
+    ;
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        multiline_newline: true
+        require_final_semicolon: false
+
+test_fail_oracle_no_spaces_before_semicolon:
+  fail_str: |
+    DELETE FROM foo
+    WHERE id = 1  ;
+    DELETE FROM bar
+    WHERE id = 2    ;
+    DELETE FROM baz
+    WHERE id = 3     ;
+    ;
+  fix_str: |
+    DELETE FROM foo
+    WHERE id = 1;
+    DELETE FROM bar
+    WHERE id = 2;
+    DELETE FROM baz
+    WHERE id = 3;
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_oracle_multiple_statements_missing_semicolons:
+  fail_str: |
+    DELETE
+    FROM code_detail
+    WHERE code_type IN ('PLTQ',
+                        'RSCD');
+    DELETE
+    FROM code_head
+    WHERE code_type IN ('PLTQ',
+                        'RSCD')
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTQ', 'Plot Quality');
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('RSCD', 'Reason codes')
+  fix_str: |
+    DELETE
+    FROM code_detail
+    WHERE code_type IN ('PLTQ',
+                        'RSCD');
+    DELETE
+    FROM code_head
+    WHERE code_type IN ('PLTQ',
+                        'RSCD');
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTQ', 'Plot Quality');
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('RSCD', 'Reason codes');
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_oracle_middle_statement_missing_semicolon_multiline:
+  fail_str: |
+    DELETE FROM foo
+    WHERE id = 1
+    INSERT INTO bar VALUES(1)
+  fix_str: |
+    DELETE FROM foo
+    WHERE id = 1
+    ;
+    INSERT INTO bar VALUES(1)
+    ;
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        multiline_newline: true
+        require_final_semicolon: true
+
+test_fail_oracle_plsql_complex_block_missing_semicolons:
+  fail_str: |
+    DECLARE
+      TYPE NumList IS TABLE OF NUMBER
+      depts  NumList := NumList(10,20,30)
+
+      TYPE enum_t IS TABLE OF employees.employee_id%TYPE
+      e_ids enum_t
+
+      TYPE dept_t IS TABLE OF employees.department_id%TYPE
+      d_ids dept_t
+
+    BEGIN
+      FORALL j IN depts.FIRST..depts.LAST
+        DELETE FROM emp_temp
+        WHERE department_id = depts(j)
+        RETURNING employee_id, department_id
+        BULK COLLECT INTO e_ids, d_ids
+
+      DBMS_OUTPUT.PUT_LINE ('Deleted ' || SQL%ROWCOUNT || ' rows:')
+
+      FOR i IN e_ids.FIRST .. e_ids.LAST
+      LOOP
+        DBMS_OUTPUT.PUT_LINE (
+          'Employee #' || e_ids(i) || ' from dept #' || d_ids(i)
+        )
+      END LOOP
+    END
+    /
+  fix_str: |
+    DECLARE
+      TYPE NumList IS TABLE OF NUMBER;
+      depts  NumList := NumList(10,20,30);
+
+      TYPE enum_t IS TABLE OF employees.employee_id%TYPE;
+      e_ids  enum_t;
+
+      TYPE dept_t IS TABLE OF employees.department_id%TYPE;
+      d_ids  dept_t;
+
+    BEGIN
+      FORALL j IN depts.FIRST..depts.LAST
+        DELETE FROM emp_temp
+        WHERE department_id = depts(j)
+        RETURNING employee_id, department_id
+        BULK COLLECT INTO e_ids, d_ids;
+
+      DBMS_OUTPUT.PUT_LINE ('Deleted ' || SQL%ROWCOUNT || ' rows:');
+
+      FOR i IN e_ids.FIRST .. e_ids.LAST
+      LOOP
+        DBMS_OUTPUT.PUT_LINE (
+          'Employee #' || e_ids(i) || ' from dept #' || d_ids(i)
+        );
+      END LOOP;
+    END;
+    /
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        multiline_newline: true
+        require_final_semicolon: true
