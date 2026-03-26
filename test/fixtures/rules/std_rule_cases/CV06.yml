@@ -47,6 +47,78 @@ test_fail_no_semi_colon_custom_require:
       convention.terminator:
         require_final_semicolon: true
 
+test_fail_multiple_semi_colons_same_statement:
+  fail_str: |
+    SELECT a FROM foo;;;
+    SELECT a
+    FROM bar;;
+  fix_str: |
+    SELECT a FROM foo;
+    SELECT a
+    FROM bar;
+  configs:
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_no_semi_colon_in_last_statement:
+  fail_str: |
+    SELECT a FROM foo;
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar;
+    SELECT bar
+    FROM foo
+  fix_str: |
+    SELECT a FROM foo;
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar;
+    SELECT bar
+    FROM foo;
+  configs:
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_no_semi_colon_in_last_multi_line_newline:
+  # Same mixed-statement scenario with multiline_newline: the last multiline
+  # statement should receive a newline semicolon.
+  fail_str: |
+    SELECT a FROM foo;
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar;
+    SELECT bar
+    FROM baz
+  fix_str: |
+    SELECT a FROM foo;
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar
+    ;
+    SELECT bar
+    FROM baz
+    ;
+  configs:
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+        multiline_newline: true
+
+test_pass_valid_statements_mixed_multi_line_newline:
+  pass_str: |
+    SELECT a FROM foo;
+    SELECT a FROM bar;
+    SELECT foo
+    FROM bar;
+    SELECT bar
+    FROM baz;
+  configs:
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
 test_fail_no_semi_colon_custom_require_oneline:
   fail_str: |
     SELECT a FROM foo
@@ -599,6 +671,150 @@ test_pass_oracle_slash_with_extra_spacing:
   configs:
     core:
       dialect: oracle
+
+test_fail_delete_insert_missing_semicolons:
+  fail_str: |
+    DELETE
+    FROM code_detail
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM');
+    --
+    DELETE
+    FROM code_head
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM')
+    --
+    -- Plot quality
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTQ', 'Plot Quality');
+    --
+    -- Reason codes
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('RSCD', 'Reason codes')
+    --
+    -- Sales status - Inventory bucket
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('SLBK', 'Sales Status')
+    --
+    -- Plot Movements
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTM', 'Movement type')
+  fix_str: |
+    DELETE
+    FROM code_detail
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM');
+    --
+    DELETE
+    FROM code_head
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM');
+    --
+    -- Plot quality
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTQ', 'Plot Quality');
+    --
+    -- Reason codes
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('RSCD', 'Reason codes');
+    --
+    -- Sales status - Inventory bucket
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('SLBK', 'Sales Status');
+    --
+    -- Plot Movements
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTM', 'Movement type');
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+
+test_fail_delete_insert_missing_semicolons_multiline:
+  fail_str: |
+    DELETE
+    FROM code_detail
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM');
+    --
+    DELETE
+    FROM code_head
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM');
+    --
+    -- Plot quality
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTQ', 'Plot Quality')
+    --
+    -- Reason codes
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('RSCD', 'Reason codes')
+    --
+    -- Sales status - Inventory bucket
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('SLBK', 'Sales Status');
+    --
+    -- Plot Movements
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTM', 'Movement type')
+  fix_str: |
+    DELETE
+    FROM code_detail
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM')
+    ;
+    --
+    DELETE
+    FROM code_head
+    WHERE code_type IN ('PLTQ',
+                        'RSCD',
+                        'SLBK',
+                        'PLTM')
+    ;
+    --
+    -- Plot quality
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTQ', 'Plot Quality')
+    ;
+    --
+    -- Reason codes
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('RSCD', 'Reason codes')
+    ;
+    --
+    -- Sales status - Inventory bucket
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('SLBK', 'Sales Status')
+    ;
+    --
+    -- Plot Movements
+    INSERT INTO code_head(code_type, code_desc)
+    VALUES('PLTM', 'Movement type')
+    ;
+
+  configs:
+    core:
+      dialect: oracle
+    rules:
+      convention.terminator:
+        require_final_semicolon: true
+        multiline_newline: true
 
 # T-SQL specific tests for batch segment handling
 test_pass_tsql_single_statement_with_semicolon:

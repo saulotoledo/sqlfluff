@@ -208,6 +208,16 @@ class Rule_CV06(BaseRule):
     def _handle_semicolon(
         self, target_segment: RawSegment, parent_segment: BaseSegment
     ) -> Optional[LintResult]:
+        # Only handle actual semicolons. Other dialects define non-semicolon
+        # statement terminators at the file level (e.g. MySQL's ~ and Databricks'
+        # command-cell marker) which should not be repositioned by this rule.
+        if target_segment.raw != ";":
+            return None
+
+        repeated_semicolon_result = self._handle_repeated_semicolons(target_segment, parent_segment)
+        if repeated_semicolon_result:
+            return repeated_semicolon_result
+
         info = self._get_segment_move_context(target_segment, parent_segment)
         semicolon_newline = self.multiline_newline if not info.is_one_line else False
         self.logger.debug("Semicolon Newline: %s", semicolon_newline)
@@ -221,6 +231,32 @@ class Rule_CV06(BaseRule):
         else:
             return self._handle_semicolon_newline(target_segment, parent_segment, info)
 
+    def _handle_repeated_semicolons(
+        self, target_segment: RawSegment, parent_segment: BaseSegment
+    ) -> Optional[LintResult]:
+        """Handle consecutive semicolons: delete extras and whitespace between them."""
+        segments = parent_segment.segments
+        try:
+            start_idx = segments.index(target_segment)
+        except ValueError:
+            return None
+
+        # Collect the run of extra ; and spaces (not newlines) after target_segment.
+        run = []
+        for seg in segments[start_idx + 1:]:
+            if (seg.is_type("statement_terminator") and seg.raw == ";") or seg.is_type("whitespace"):
+                run.append(seg)
+            else:
+                break
+
+        if not any(s.is_type("statement_terminator") for s in run):
+            return None
+
+        return LintResult(
+            anchor=target_segment,
+            fixes=[LintFix.delete(s) for s in run],
+        )
+
     def _handle_semicolon_same_line(
         self,
         target_segment: RawSegment,
@@ -230,9 +266,6 @@ class Rule_CV06(BaseRule):
         if not info.before_segment:
             return None
 
-        # If preceding segments are found then delete the old
-        # semi-colon and its preceding whitespace and then insert
-        # the semi-colon in the correct location.
         fixes = self._create_semicolon_and_delete_whitespace(
             target_segment,
             parent_segment,
@@ -264,10 +297,6 @@ class Rule_CV06(BaseRule):
             s.is_type("newline") for s in before_segment
         ):
             return None
-
-        # If preceding segment is not a single newline then delete the old
-        # semi-colon/preceding whitespace and then insert the
-        # semi-colon in the correct location.
 
         # This handles an edge case in which an inline comment comes after
         # the semi-colon.
@@ -338,73 +367,20 @@ class Rule_CV06(BaseRule):
     def _ensure_final_semicolon(
         self, parent_segment: BaseSegment
     ) -> Optional[LintResult]:
-        # Get the last statement in the file (may be nested in a batch)
-        last_statement = self._get_last_statement(parent_segment)
-        if not last_statement:
-            return None  # File does not contain any statements
-
-        # Find the container segment that directly contains the last statement
-        # (This could be the file itself or a batch segment in T-SQL)
-        statement_container = None
-        for seg in parent_segment.segments:
-            if seg.is_type("statement") and seg is last_statement:
-                statement_container = parent_segment
-                break
-            elif seg.is_code:
-                # Check if this code segment contains the last statement
-                statements_in_seg = list(seg.recursive_crawl("statement"))
-                if last_statement in statements_in_seg:
-                    # The statement is inside this code segment
-                    # Now find the direct container
-                    for subseg in seg.segments:
-                        if subseg is last_statement:
-                            statement_container = seg
-                            break
-                    if not statement_container:  # pragma: no cover
-                        # Statement is deeper, need to search recursively
-                        # This is a defensive fallback for deeply nested structures
-                        statement_container = seg
-                    break
-
-        if not statement_container:  # pragma: no cover
+        last_code = next((s for s in reversed(parent_segment.segments) if s.is_code), None)
+        if last_code is None:
             return None
 
-        # Check if there's a semicolon terminator after the last statement
-        # or if the last statement itself ends with a semicolon.
-        semi_colon_exist_flag = bool(
-            last_statement.raw_segments
-        ) and self._is_segment_semicolon(last_statement.raw_segments[-1])
+        semi_colon_exist_flag = any(
+            s.is_type("statement_terminator") for s in parent_segment.segments
+        )
+        is_one_line = self._is_one_line_statement(parent_segment, last_code)
 
-        found_last_statement = False
-        for seg in statement_container.segments:
-            if seg is last_statement:
-                found_last_statement = True
-            elif found_last_statement:
-                if seg.is_type("statement_terminator") and self._is_segment_semicolon(
-                    seg
-                ):
-                    semi_colon_exist_flag = True
-                    break
-                elif seg.is_code:  # pragma: no cover
-                    # Hit another code segment, no terminator found
-                    # Edge case: multiple statements without delimiters between them
-                    break
-
-        if semi_colon_exist_flag:
-            return None  # Semicolon already exists
-
-        # Iterate backwards over complete stack to find anchor point
-        # Start from the statement container, not the parent
-        anchor_segment = statement_container.segments[-1]
-        trigger_segment = statement_container.segments[-1]
-        is_one_line = False
         before_segment = []
-        for segment in statement_container.segments[::-1]:
+        anchor_segment = trigger_segment = parent_segment.segments[-1]
+        for segment in reversed(parent_segment.segments):
             anchor_segment = segment
             if segment.is_code:
-                is_one_line = self._is_one_line_statement(
-                    parent_segment, last_statement
-                )
                 break
             elif not segment.is_meta:
                 before_segment.append(segment)
@@ -416,53 +392,68 @@ class Rule_CV06(BaseRule):
         semicolon_newline = self.multiline_newline if not is_one_line else False
 
         if not semi_colon_exist_flag:
-            # Create the final semi-colon if it does not yet exist.
-
-            # Semi-colon on same line.
-            if not semicolon_newline:
-                fixes = [
-                    LintFix.create_after(
-                        self._choose_anchor_segment(
-                            parent_segment,
-                            "create_after",
-                            anchor_segment,
-                            filter_meta=True,
-                        ),
-                        [
-                            SymbolSegment(raw=";", type="statement_terminator"),
-                        ],
-                    )
-                ]
-            # Semi-colon on new line.
-            else:
-                # Adjust before_segment and anchor_segment for inline
-                # comments.
-                (
-                    before_segment,
-                    anchor_segment,
-                ) = self._handle_preceding_inline_comments(
+            if semicolon_newline:
+                before_segment, anchor_segment = self._handle_preceding_inline_comments(
                     before_segment, anchor_segment
                 )
                 self.logger.debug("Revised anchor on: %s", anchor_segment)
-                fixes = [
-                    LintFix.create_after(
-                        self._choose_anchor_segment(
-                            parent_segment,
-                            "create_after",
-                            anchor_segment,
-                            filter_meta=True,
-                        ),
-                        [
-                            NewlineSegment(),
-                            SymbolSegment(raw=";", type="statement_terminator"),
-                        ],
-                    )
-                ]
-            return LintResult(
-                anchor=trigger_segment,
-                fixes=fixes,
+            create_segments: list[BaseSegment] = []
+            if semicolon_newline:
+                create_segments.append(NewlineSegment())
+            create_segments.append(SymbolSegment(raw=";", type="statement_terminator"))
+            fixes = [
+                LintFix.create_after(
+                    self._choose_anchor_segment(
+                        parent_segment, "create_after", anchor_segment, filter_meta=True
+                    ),
+                    create_segments,
+                )
+            ]
+            return LintResult(anchor=trigger_segment, fixes=fixes)
+        return None
+
+    def _handle_missing_semicolon(
+        self, statement_segment: BaseSegment, parent_segment: BaseSegment
+    ) -> Optional[LintResult]:
+        """Handle a statement that is completely missing a semicolon."""
+        is_one_line = self._is_one_line_statement(parent_segment, statement_segment)
+        semicolon_newline = self.multiline_newline and not is_one_line
+
+        # Collect non-code, non-meta segments after this statement (before the next
+        # code segment) to detect same-line inline comments that must stay before \n;
+        anchor_segment: BaseSegment = statement_segment
+        before_segment: list[BaseSegment] = []
+        found = False
+        for segment in parent_segment.segments:
+            if segment is statement_segment:
+                found = True
+                continue
+            if found:
+                if segment.is_code:
+                    break
+                elif not segment.is_meta:
+                    before_segment.append(segment)
+
+        if semicolon_newline:
+            _, anchor_segment = self._handle_preceding_inline_comments(
+                before_segment, anchor_segment
             )
-        return None  # pragma: no cover
+
+        create_segments: list[BaseSegment] = []
+        if semicolon_newline:
+            create_segments.append(NewlineSegment())
+        create_segments.append(SymbolSegment(raw=";", type="statement_terminator"))
+
+        # Use the anchor itself as the root to prevent hoisting up to the
+        # batch/file level.  Hoisting would place the semicolon *outside* the
+        # batch, causing the rule to re-fire on subsequent fix iterations.
+        final_anchor = self._choose_anchor_segment(
+            anchor_segment, "create_after", anchor_segment, filter_meta=True
+        )
+        return LintResult(
+            anchor=statement_segment,
+            fixes=[LintFix.create_after(final_anchor, create_segments)],
+        )
 
     def _eval(self, context: RuleContext) -> list[LintResult]:
         """Statements must end with a semi-colon."""
@@ -474,44 +465,47 @@ class Rule_CV06(BaseRule):
         assert context.segment.is_type("file")
         results = []
 
-        # Process file segments and any batch segments (for T-SQL)
-        # Collect all containers that should be processed
-        containers_to_process = []
-
-        # Always process the file level
-        containers_to_process.append(context.segment)
-
-        # Also process any batch segments (T-SQL specific)
+        # Process statements at the file level AND inside any top-level batch
+        # segments (T-SQL, Oracle, and similar dialects wrap statements in batches).
+        containers: list[BaseSegment] = [context.segment]
         for seg in context.segment.segments:
             if seg.is_type("batch"):
-                containers_to_process.append(seg)
+                containers.append(seg)
 
-        for container in containers_to_process:
-            for idx, seg in enumerate(container.segments):
+        for container in containers:
+            statements_needing_semicolons: list[BaseSegment] = []
+
+            for seg in container.segments:
                 res = None
+
+                if seg.is_type("statement"):
+                    # Skip statements whose last raw segment is already a ';'
+                    # statement_terminator (e.g. PL/SQL blocks ending with END;).
+                    # Those statements carry their own terminator internally.
+                    raw_segs = seg.raw_segments
+                    if not (
+                        raw_segs
+                        and self._is_segment_semicolon(raw_segs[-1])
+                    ):
+                        statements_needing_semicolons.append(seg)
+
                 # First we can simply handle the case of existing semi-colon alignment.
                 if seg.is_type("statement_terminator"):
                     # If it's a terminator then we know it's a raw.
                     seg = cast(RawSegment, seg)
                     self.logger.debug("Handling semi-colon: %s", seg)
+                    res = self._handle_semicolon(seg, container)
 
-                    if self._is_segment_semicolon(seg):
-                        res = self._handle_semicolon(seg, container)
-                # Otherwise handle the end of the container separately.
-                # Only check for final semicolon at the file level, not batch level
-                elif (
-                    self.require_final_semicolon
-                    and container is context.segment  # Only for file, not batch
-                    and idx == len(container.segments) - 1
-                ):
-                    self.logger.debug("Handling final segment: %s", seg)
-                    has_final_non_semicolon_terminator = (
-                        self._has_final_non_semicolon_terminator(container)
-                    )
+                    if statements_needing_semicolons:
+                        statements_needing_semicolons.pop()
 
-                    if not has_final_non_semicolon_terminator:
-                        res = self._ensure_final_semicolon(container)
                 if res:
                     results.append(res)
+
+            if self.require_final_semicolon:
+                for statement in statements_needing_semicolons:
+                    res = self._handle_missing_semicolon(statement, container)
+                    if res:
+                        results.append(res)
 
         return results
