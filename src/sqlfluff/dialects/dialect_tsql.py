@@ -3480,12 +3480,15 @@ class TableReferenceSegment(ObjectReferenceSegment):
         Sequence(
             Ref("SingleIdentifierGrammar"),
             AnyNumberOf(
-                Sequence(
-                    Ref("DotSegment"),
-                    Ref("SingleIdentifierGrammar", optional=True),
+                OneOf(
+                    Ref("DatatypeMethodSegment"),
+                    Sequence(
+                        Ref("DotSegment"),
+                        Ref("SingleIdentifierGrammar", optional=True),
+                    ),
                 ),
                 min_times=0,
-                max_times=3,
+                max_times=4,
             ),
         ),
         # This can have a leading number of dots. If the table reference starts with a
@@ -7145,6 +7148,10 @@ class MergeStatementSegment(ansi.MergeStatementSegment):
                 Bracketed(
                     Ref("SelectableGrammar"),
                 ),
+                Ref("AliasExpressionSegment", optional=True),
+            ),
+            Sequence(
+                Ref("TableExpressionSegment"),
                 Ref("AliasExpressionSegment", optional=True),
             ),
         ),
